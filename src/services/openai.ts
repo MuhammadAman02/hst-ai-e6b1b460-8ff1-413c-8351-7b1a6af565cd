@@ -1,68 +1,103 @@
-import OpenAI from 'openai';
-
 interface Message {
   role: 'user' | 'assistant';
   content: string;
 }
 
 class OpenAIService {
-  private openai: OpenAI | null = null;
+  private apiKey: string = '';
 
   constructor() {
-    const apiKey = import.meta.env.VITE_OPENAI_API_KEY;
-    console.log('Initializing OpenAI service, API key present:', !!apiKey);
-    
-    if (apiKey) {
-      this.openai = new OpenAI({
-        apiKey: apiKey,
-        dangerouslyAllowBrowser: true // Note: In production, use a backend API
-      });
+    // Load API key from localStorage on initialization
+    this.loadApiKey();
+    console.log('OpenAI service initialized');
+  }
+
+  private loadApiKey() {
+    const storedKey = localStorage.getItem('openai_api_key');
+    if (storedKey) {
+      this.apiKey = storedKey;
+      console.log('API key loaded from localStorage');
     }
   }
 
-  async sendMessage(message: string, history: Message[] = []): Promise<string> {
-    console.log('OpenAI service: sending message', message);
-    
-    if (!this.openai) {
-      console.error('OpenAI not initialized - missing API key');
-      throw new Error('OpenAI API key not configured. Please add VITE_OPENAI_API_KEY to your environment variables.');
+  setApiKey(apiKey: string) {
+    this.apiKey = apiKey;
+    console.log('API key set in service');
+  }
+
+  getApiKey(): string {
+    return this.apiKey;
+  }
+
+  hasApiKey(): boolean {
+    return !!this.apiKey;
+  }
+
+  async sendMessage(message: string, history: any[] = []): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error('OpenAI API key not configured. Please set your API key in settings.');
     }
 
+    console.log('Sending message to OpenAI:', message);
+    console.log('Message history length:', history.length);
+
+    // Convert history to OpenAI format
+    const messages: Message[] = [
+      {
+        role: 'user',
+        content: 'You are a helpful AI assistant. Please provide helpful, accurate, and friendly responses.'
+      },
+      ...history.map(msg => ({
+        role: msg.role as 'user' | 'assistant',
+        content: msg.content
+      })),
+      {
+        role: 'user',
+        content: message
+      }
+    ];
+
     try {
-      const messages = [
-        {
-          role: 'system' as const,
-          content: 'You are a helpful AI assistant. Provide helpful, accurate, and friendly responses.'
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`,
         },
-        ...history.slice(-10).map(msg => ({
-          role: msg.role as 'user' | 'assistant',
-          content: msg.content
-        })),
-        {
-          role: 'user' as const,
-          content: message
-        }
-      ];
-
-      console.log('Sending to OpenAI with messages:', messages.length);
-
-      const completion = await this.openai.chat.completions.create({
-        model: 'gpt-3.5-turbo',
-        messages: messages,
-        max_tokens: 1000,
-        temperature: 0.7,
+        body: JSON.stringify({
+          model: 'gpt-3.5-turbo',
+          messages: messages,
+          max_tokens: 1000,
+          temperature: 0.7,
+        }),
       });
 
-      const response = completion.choices[0]?.message?.content || 'Sorry, I could not generate a response.';
-      console.log('OpenAI response received:', response.substring(0, 100) + '...');
-      
-      return response;
-    } catch (error) {
-      console.error('OpenAI API error:', error);
-      if (error instanceof Error) {
-        throw new Error(`OpenAI API error: ${error.message}`);
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        console.error('OpenAI API error:', response.status, errorData);
+        
+        if (response.status === 401) {
+          throw new Error('Invalid API key. Please check your OpenAI API key.');
+        } else if (response.status === 429) {
+          throw new Error('Rate limit exceeded. Please try again later.');
+        } else if (response.status === 403) {
+          throw new Error('Access denied. Please check your API key permissions.');
+        } else {
+          throw new Error(`OpenAI API error: ${response.status}`);
+        }
       }
-      throw new Error('Failed to get response from OpenAI');
+
+      const data = await response.json();
+      console.log('OpenAI response received:', data);
+
+      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
+        throw new Error('Invalid response format from OpenAI');
+      }
+
+      return data.choices[0].message.content;
+    } catch (error) {
+      console.error('Error calling OpenAI API:', error);
+      throw error;
     }
   }
 }
